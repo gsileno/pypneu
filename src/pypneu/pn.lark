@@ -1,0 +1,12 @@
+start: statement+
+
+// consumables : catalysts -> inhibitors -o TRANSITION -> outputs
+statement: place_list ":" place_list "->" place_list "-o" TRANSITION "->" place_list "."
+
+place_list: [PLACE ("," PLACE)*]
+
+PLACE:      /[a-z0-9_]+/
+TRANSITION: /#[a-z0-9_]+/
+
+%import common.WS
+%ignore WS
