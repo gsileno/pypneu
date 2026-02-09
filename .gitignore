@@ -1,3 +1,6 @@
 src/pypneu.egg-info/
 .idea
 .venv
+/output/
+/logs/
+/reports/

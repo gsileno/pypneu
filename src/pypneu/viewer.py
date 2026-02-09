@@ -4,8 +4,8 @@ Translates Petri Net structures into graphical representations.
 """
 
 import pydot
-from typing import Dict, Any
-from . import structures as pn
+from typing import Dict, Any, List, Optional
+from pypneu.structures import PetriNetStructure, Place, Transition, Arc, ArcType
 
 # Constants for styling
 TOKEN_CHAR = "●"
@@ -14,35 +14,59 @@ DEFAULT_NODE_ATTRS = {"width": 0.4, "height": 0.4, "fixedsize": "true"}
 class PetriNetViewer:
     """Generates Pydot graphs from PetriNetStructure objects."""
 
-    def __init__(self, lppn: pn.PetriNetStructure):
-        if not isinstance(lppn, pn.PetriNetStructure):
+    def __init__(
+        self,
+        net: PetriNetStructure,
+        highlight_green: List[str] = None,
+        highlight_red: List[str] = None
+    ):
+        if not isinstance(net, PetriNetStructure):
             raise ValueError("Input must be a PetriNetStructure")
-        self.lppn = lppn
+        self.pn = net
+        # NIDs or Labels to highlight green (Enabled/Fired)
+        self.highlight_green = highlight_green or []
+        # NIDs or Labels to highlight red (Blocked/Inhibited)
+        self.highlight_red = highlight_red or []
 
     def _get_node_style(self, element) -> Dict[str, Any]:
         """Returns the Pydot attribute dictionary for a given PN element."""
         style = DEFAULT_NODE_ATTRS.copy()
 
-        # Check if the place is marked (boolean in your structures.py)
+        # Check marking state
         is_filled = getattr(element, 'marking', False)
-
-        # Labeling Logic:
-        # For places, we put the Token inside the circle.
-        # For transitions, we keep them empty but label them with their name.
         style['label'] = TOKEN_CHAR if is_filled else ""
 
         if hasattr(element, 'label') and element.label:
-            # xlabel places the text outside the node so it doesn't overlap the token
             style['xlabel'] = str(element.label)
 
         # Type-specific shape overrides
-        if isinstance(element, pn.Place):
+        if isinstance(element, Place):
             style.update({"shape": "circle"})
-        elif isinstance(element, pn.Transition):
+
+        elif isinstance(element, Transition):
             style.update({"shape": "box", "style": "filled", "fillcolor": "white"})
-            # If it's a source transition, maybe give it a slight tint
-            if element.is_source:
-                style.update({"fillcolor": "#e8f5e9"}) # Very light green
+
+            # Identify ID and Label for lookup
+            nid, label = element.nid, element.label
+
+            # --- HIGHLIGHT LOGIC ---
+            if nid in self.highlight_green or label in self.highlight_green:
+                # ENABLED / FIRED
+                style.update({
+                    "fillcolor": "#90ee90",  # Light Green
+                    "color": "#006400",      # Dark Green border
+                    "penwidth": "2.5"
+                })
+            elif nid in self.highlight_red or label in self.highlight_red:
+                # BLOCKED BY INHIBITOR
+                style.update({
+                    "fillcolor": "#ffcccb",  # Light Red
+                    "color": "#8b0000",      # Dark Red border
+                    "penwidth": "2.5",
+                    "style": "filled,dashed"  # Dashed border for "blocked"
+                })
+            elif element.is_source:
+                style.update({"fillcolor": "#f0f8ff"})
 
         return style
 
@@ -59,38 +83,32 @@ class PetriNetViewer:
 
         id_to_pydot_node = {}
 
-        # 1. Process Nodes (Places and Transitions)
-        for p in self.lppn.places:
-            attrs = self._get_node_style(p)
-            node = pydot.Node(p.nid, **attrs)
+        # 1. Process Nodes
+        for p in self.pn.places:
+            node = pydot.Node(p.nid, **self._get_node_style(p))
             id_to_pydot_node[p.nid] = node
             graph.add_node(node)
 
-        for t in self.lppn.transitions:
-            attrs = self._get_node_style(t)
-            node = pydot.Node(t.nid, **attrs)
+        for t in self.pn.transitions:
+            node = pydot.Node(t.nid, **self._get_node_style(t))
             id_to_pydot_node[t.nid] = node
             graph.add_node(node)
 
-        # 2. Process Arcs using ArcType for styling
-        for arc in self.lppn.arcs:
+        # 2. Process Arcs
+        for arc in self.pn.arcs:
             edge_attrs = {"style": "solid"}
 
-            # Map ArcTypes to Graphviz arrowheads
-            if arc.type == pn.ArcType.INHIBITOR:
-                edge_attrs["arrowhead"] = "dot" # Standard circle for inhibition
-            elif arc.type == pn.ArcType.RESET:
+            if arc.type == ArcType.INHIBITOR:
+                edge_attrs["arrowhead"] = "dot"
+            elif arc.type == ArcType.RESET:
                 edge_attrs["arrowhead"] = "diamond"
                 edge_attrs["style"] = "dashed"
-            elif arc.type == pn.ArcType.ENABLER:
-                edge_attrs["arrowhead"] = "normal"
 
-            pydot_edge = pydot.Edge(
+            graph.add_edge(pydot.Edge(
                 id_to_pydot_node[arc.source.nid],
                 id_to_pydot_node[arc.target.nid],
                 **edge_attrs
-            )
-            graph.add_edge(pydot_edge)
+            ))
 
         return graph
 
