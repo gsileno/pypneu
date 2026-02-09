@@ -1,4 +1,5 @@
 import logging
+import random
 from typing import List, Optional, Iterable, Set, Dict
 from .structures import PetriNetStructure, Place, Transition
 
@@ -19,22 +20,26 @@ class PetriNetExecution:
     def run_simulation(self, iterations: int) -> int:
         steps_completed = 0
         for i in range(iterations):
-            logger.info(f"Attempting execution step {i}")
+            # step() now returns the group or None
             if not self.step():
-                logger.info(f"Simulation stopped at step {i}: No transitions enabled.")
                 break
             steps_completed += 1
 
-        print(f"\nFinal Marking: {self.pn.marking_to_string()}")
+        # Moved to debug to keep the terminal clean during batch runs
+        logger.debug(f"Final Marking: {self.pn.marking_to_string()}")
         return steps_completed
 
-    def step(self) -> bool:
+    def step(self) -> Optional[List[Transition]]:
+        """
+        Executes one step.
+        Returns the List of Transitions fired, or None if no transitions were enabled.
+        """
         firing_group = self._get_next_firing_group()
         if not firing_group:
-            return False
+            return None
 
         self._fire_group(firing_group)
-        return True
+        return firing_group  # Returns the actual group for the simulator to log
 
     def _is_group_ready(self, group: List[Transition]) -> bool:
         """Validates if a group (Bus) can fire."""
@@ -59,16 +64,14 @@ class PetriNetExecution:
 
             if self._is_group_ready(group):
                 self.remaining_story.pop(0)
-                logger.info(f"Story match: Firing bus group '{target_label}'")
                 return group
-            return []  # Story is blocked
+            return []
 
-        # 2. Collect ALL currently enabled groups
+            # 2. Collect ALL currently enabled groups
         enabled_map: Dict[str, List[Transition]] = {}
         processed_labels: Set[str] = set()
 
         for t in self.pn.transitions:
-            # Use label as key, or a unique string for unlabeled transitions
             key = t.label if t.label else f"unlabeled_{id(t)}"
 
             if key not in processed_labels:
@@ -77,33 +80,29 @@ class PetriNetExecution:
                     enabled_map[key] = group
                 processed_labels.add(key)
 
-        # 3. Delegate selection to the hook (overridden in Stochastic subclass)
         return self.select_transition_group(enabled_map)
 
     def select_transition_group(self, enabled_map: Dict[str, List[Transition]]) -> List[Transition]:
-        """
-        Hook for selection strategy.
-        Default behavior is deterministic: returns the first group found.
-        """
+        """Hook for selection strategy."""
         if not enabled_map:
             return []
-
-        # Consistent deterministic choice (first key in dict)
         first_key = next(iter(enabled_map))
         return enabled_map[first_key]
 
     def _fire_group(self, transitions: List[Transition]):
         """Atomic Firing: Consume all inputs before producing any outputs."""
+
         for t in transitions:
             t.consume_input_tokens()
 
         for t in transitions:
             t.produce_output_tokens()
 
-import random
-class StochasticPetriNetExecution(PetriNetExecution):
 
-    def select_transition_group(self, enabled_map):
+class StochasticPetriNetExecution(PetriNetExecution):
+    """Subclass implementing stochastic selection among enabled groups."""
+
+    def select_transition_group(self, enabled_map: Dict[str, List[Transition]]) -> List[Transition]:
         if not enabled_map:
             return []
         labels = list(enabled_map.keys())

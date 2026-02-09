@@ -8,8 +8,7 @@ from PIL import Image
 from io import BytesIO
 
 import pypneu
-# Note: We import classes from the top-level 'pypneu' package
-# as defined in your __init__.py to avoid naming collisions.
+
 from pypneu import (
     StochasticPetriNetExecution,
     BatchSimulator,
