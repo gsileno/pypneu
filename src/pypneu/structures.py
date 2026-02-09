@@ -1,11 +1,15 @@
+import logging
 from enum import IntEnum, auto
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Union
+
+# Set up logging for internal structure debugging
+logger = logging.getLogger("pypneu.structures")
 
 
 class ArcType(IntEnum):
     ENABLER = auto()  # Standard flow (consumes)
     INHIBITOR = auto()  # Blocks if source has token (does not consume)
-    RESET = auto()  # Flushes target
+    RESET = auto()  # Flushes target marking
 
 
 class Node:
@@ -25,11 +29,11 @@ class Arc:
         self.target = target
         self.type = type
         self.nid: Optional[str] = None
+        # Bi-directional link
         self.source.outputs.append(self)
         self.target.inputs.append(self)
 
     def __repr__(self) -> str:
-        # Crucial for debugging arc counts: shows who is connected to whom
         src_label = getattr(self.source, 'label', self.source.nid)
         tgt_label = getattr(self.target, 'label', self.target.nid)
         return f"<Arc {self.nid}: {src_label} --({self.type.name})--> {tgt_label}>"
@@ -42,6 +46,7 @@ class Place(Node):
         self.marking = marking
 
     def flush(self):
+        logger.debug(f"Flushing place {self.label} ({self.nid})")
         self.marking = False
 
     def __str__(self) -> str:
@@ -52,36 +57,40 @@ class Transition(Node):
     def __init__(self, label: Optional[str] = None):
         super().__init__()
         self.label = label
+        self.fired_count = 0  # Track executions to enforce "max once" for sources
 
     @property
     def is_source(self) -> bool:
-        # Filter for arcs coming from Places that are specifically ENABLERS
-        enabler_inputs = [a for a in self.inputs if isinstance(a.source, Place) and a.type == ArcType.ENABLER]
-
-        # DEBUG TRACE: This will print during your unit test failure
-        if len(enabler_inputs) > 0:
-            print(f"\n[DEBUG] Transition '{self.label}' is NOT a source.")
-            print(f"  Reason: Found {len(enabler_inputs)} enabler input(s):")
-            for a in enabler_inputs:
-                print(f"    - Source: '{a.source.label}' (NID: {a.source.nid})")
-
-        return len(enabler_inputs) == 0
+        """A transition is a source if it has no incoming ENABLER arcs from Places."""
+        enablers = [a for a in self.inputs if isinstance(a.source, Place) and a.type == ArcType.ENABLER]
+        return len(enablers) == 0
 
     def is_enabled(self) -> bool:
+        """Checks if all enablers are present and no inhibitors are blocking."""
         enablers = [a for a in self.inputs if a.type == ArcType.ENABLER]
         inhibitors = [a for a in self.inputs if a.type == ArcType.INHIBITOR]
 
         enabled = all(isinstance(a.source, Place) and a.source.marking for a in enablers)
         inhibited = any(isinstance(a.source, Place) and a.source.marking for a in inhibitors)
+
         return enabled and not inhibited
 
-    def fire(self):
-        if not self.is_enabled(): return
+    def consume_input_tokens(self):
+        """Removes tokens from all connected ENABLER input places and increments fired_count."""
         for a in (x for x in self.inputs if x.type == ArcType.ENABLER):
-            if isinstance(a.source, Place): a.source.marking = False
+            if isinstance(a.source, Place) and a.source.marking:
+                logger.debug(f"Consuming token from {a.source.label}")
+                a.source.marking = False
+
+        # Increment firing count (important for source transitions)
+        self.fired_count += 1
+
+    def produce_output_tokens(self):
+        """Produces tokens in target places or flushes them on RESET arcs."""
         for a in self.outputs:
             if isinstance(a.target, Place):
                 if a.type == ArcType.ENABLER:
+                    logger.debug(f"Producing token into {a.target.label}")
                     a.target.marking = True
                 elif a.type == ArcType.RESET:
                     a.target.flush()
@@ -92,10 +101,10 @@ class Transition(Node):
 
 class PetriNetStructure:
     def __init__(self, places=(), transitions=(), arcs=()):
-        self.places = list(places)
-        self.transitions = list(transitions)
-        self.arcs = list(arcs)
-        self.registry = {}
+        self.places: List[Place] = list(places)
+        self.transitions: List[Transition] = list(transitions)
+        self.arcs: List[Arc] = list(arcs)
+        self.registry: Dict[str, Union[Place, Transition, Arc]] = {}
         self._initialize_net()
 
     def _initialize_net(self):
@@ -106,12 +115,9 @@ class PetriNetStructure:
                 item.nid = nid
                 self.registry[nid] = item
 
-    def __str__(self) -> str:
-        h = "-" * 37
-        lines = [h, "Places:"] + [f"{p}" for p in self.places]
-        lines += ["Transitions:"] + [f"{t}" for t in self.transitions]
-        lines += ["Arcs:"]
-        for a in self.arcs:
-            t_str = f" ({a.type.name})" if a.type != ArcType.ENABLER else ""
-            lines.append(f"{a.nid}: {a.source.nid} -> {a.target.nid}{t_str}")
-        return "\n".join(lines + [h])
+    @property
+    def id2place(self) -> Dict[str, Place]:
+        return {p.nid: p for p in self.places}
+
+    def marking_to_string(self) -> str:
+        return ", ".join(f"{p.label}: {'●' if p.marking else '○'}" for p in self.places)

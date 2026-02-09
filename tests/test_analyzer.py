@@ -1,25 +1,28 @@
 import unittest
 import os
 import sys
+import logging
 
-# Ensure the src directory is in the path if not installed as a package
+# Ensure the src directory is in the path
 sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 
-from pypneu.structures import Place, Transition, Arc, PlaceBinding, TransitionBinding
-from pypneu.analysis import PetriNetAnalysis
+from pypneu.structures import Place, Transition, Arc, ArcType
+from pypneu.analyzer import PetriNetAnalysis
 from pypneu.executor import PetriNetExecution
+
+# Enable logging for visibility during tests
+logging.basicConfig(level=logging.DEBUG)
 
 
 class AnalyzerTestCase(unittest.TestCase):
 
-    def _setup_analysis(self, places=(), transitions=(), arcs=(), p_bindings=(), t_bindings=()):
+    def _setup_analysis(self, places=(), transitions=(), arcs=(), story=None):
         """Helper to inject the executor into the analysis engine."""
         executor = PetriNetExecution(
             places=places,
             transitions=transitions,
             arcs=arcs,
-            p_bindings=p_bindings,
-            t_bindings=t_bindings
+            story=story
         )
         return PetriNetAnalysis(executor)
 
@@ -32,93 +35,92 @@ class AnalyzerTestCase(unittest.TestCase):
         t1 = Transition("t1")
         t2 = Transition("t2")
 
-        a1 = p1.connect_to(t1)
-        a2 = t1.connect_to(p2)
-        a3 = p2.connect_to(t2)
-        a4 = t2.connect_to(p3)
+        a1 = Arc(p1, t1, ArcType.ENABLER)
+        a2 = Arc(t1, p2, ArcType.ENABLER)
+        a3 = Arc(p2, t2, ArcType.ENABLER)
+        a4 = Arc(t2, p3, ArcType.ENABLER)
 
-        net = self._setup_analysis(
+        analysis = self._setup_analysis(
             places=[p1, p2, p3],
             transitions=[t1, t2],
             arcs=[a1, a2, a3, a4]
         )
 
-        _, _, iterations = net.run_analysis()
+        num_states, _, _ = analysis.run_analysis()
 
-        # Iterations usually equal steps to stability
-        self.assertEqual(iterations, 2)
-        # Check path base (Initial, after T1, after T2)
-        self.assertEqual(len(net.path_base), 3)
+        # States: 1 (Initial), 2 (After T1), 3 (After T2)
+        self.assertEqual(num_states, 3)
+        self.assertEqual(len(analysis.state_base), 3)
+
+        # Verify deadlocks (s2 should be a deadlock as P3 is a sink)
+        deadlocks = analysis.get_deadlocks()
+        self.assertEqual(len(deadlocks), 1)
+        self.assertTrue(deadlocks[0].marking['p3'])
 
     def test_nondeterministic_fork_analysis(self):
-        """Test a fork where P1 enables both T1 and T2."""
+        """Test a fork where P1 enables both T1 and T2 (Conflict)."""
         p1 = Place("p1", True)
         t1 = Transition("t1")
         t2 = Transition("t2")
 
-        a1 = p1.connect_to(t1)
-        a2 = p1.connect_to(t2)
+        a1 = Arc(p1, t1, ArcType.ENABLER)
+        a2 = Arc(p1, t2, ArcType.ENABLER)
 
-        net = self._setup_analysis([p1], [t1, t2], [a1, a2])
+        analysis = self._setup_analysis([p1], [t1, t2], [a1, a2])
 
-        _, _, iterations = net.run_analysis()
+        analysis.run_analysis()
 
-        # State base should contain: Initial state, State after T1, State after T2
-        # (Assuming T1 and T2 both consume P1)
-        self.assertEqual(len(net.state_base), 3)
-        self.assertEqual(len(net.path_base), 2)
+        # State base should contain: s0 (P1), s1 (Empty via T1), s2 (Empty via T2)
+        # Note: Since s1 and s2 have the same marking, they collapse into 2 unique states.
+        self.assertEqual(len(analysis.state_base), 2)
+        # However, the explorer should have found 2 distinct paths to explore
+        self.assertEqual(len(analysis.path_base), 2)
 
-    def test_logic_programming_bindings(self):
-        """Test LPPN with Place and Transition bindings."""
+    def test_bus_synchronization_analysis(self):
+        """Verify the analyzer treats shared labels as a single atomic step."""
         p1 = Place("p1", True)
-        p2 = Place("p2")
-        p3 = Place("p3")
-        p4 = Place("p4")
-        p5 = Place("p5")
+        p2 = Place("p2", True)
+        t1 = Transition("shared")
+        t2 = Transition("shared")
 
-        bp1 = PlaceBinding()
-        bt1 = TransitionBinding()
+        a1 = Arc(p1, t1, ArcType.ENABLER)
+        a2 = Arc(p2, t2, ArcType.ENABLER)
 
+        analysis = self._setup_analysis([p1, p2], [t1, t2], [a1, a2])
+        analysis.run_analysis()
+
+        # Should only have 2 states: Initial and both consumed.
+        # It should NOT explore firing T1 and T2 separately.
+        self.assertEqual(len(analysis.state_base), 2)
+
+    def test_source_firing_limit_analysis(self):
+        """Ensure analyzer respects the 'fire once' rule for sources to avoid infinite loops."""
+        p1 = Place("p1")
+        t1 = Transition("source_t")  # No inputs
+        Arc(t1, p1, ArcType.ENABLER)
+
+        analysis = self._setup_analysis([p1], [t1], [])
+        analysis.run_analysis()
+
+        # State 0: p1: false, t1.fired=0
+        # State 1: p1: true,  t1.fired=1
+        # It should stop at State 1 because the source cannot fire again.
+        self.assertEqual(len(analysis.state_base), 2)
+
+    def test_inhibitor_reachability(self):
+        """Test that inhibitor arcs correctly prune the state space."""
+        p_in = Place("p_in", True)
+        p_block = Place("p_block", True)
         t1 = Transition("t1")
-        t2 = Transition("t2")
 
-        # Standard Petri Net arcs
-        a1 = p1.connect_to(t1)
-        a2 = t1.connect_to(p2)
-        a8 = t2.connect_to(p5)
+        Arc(p_in, t1, ArcType.ENABLER)
+        Arc(p_block, t1, ArcType.INHIBITOR)
 
-        # Logic Bindings (Inference)
-        a3 = p2.connect_to(bp1)  # p2 is part of bp1 input
-        a4 = p5.connect_to(bp1)  # p5 is part of bp1 input
-        a5 = bp1.connect_to(p4)  # bp1 implies p4
+        analysis = self._setup_analysis([p_in, p_block], [t1], [])
+        analysis.run_analysis()
 
-        a6 = t1.connect_to(bt1)  # t1 enables bt1
-        a7 = bt1.connect_to(t2)  # bt1 implies t2
-
-        net = self._setup_analysis(
-            places=[p1, p2, p3, p4, p5],
-            transitions=[t1, t2],
-            p_bindings=[bp1],
-            t_bindings=[bt1],
-            arcs=[a1, a2, a3, a4, a5, a6, a7, a8]
-        )
-
-        # Pre-execution check
-        self.assertTrue(p1.marking)
-        self.assertFalse(p4.marking)
-
-        net.run_analysis()
-
-        # Logic Check:
-        # T1 fires -> produces P2.
-        # T1 fires -> (Transition Binding) -> implies T2 fires.
-        # T2 fires -> produces P5.
-        # P2 AND P5 are now true -> (Place Binding) -> implies P4 is true.
-
-        self.assertFalse(p1.marking)
-        self.assertTrue(p2.marking)
-        self.assertTrue(p5.marking)
-        self.assertTrue(p4.marking)
+        # Should only have 1 state (Initial) because T1 is blocked
+        self.assertEqual(len(analysis.state_base), 1)
 
 
 if __name__ == '__main__':

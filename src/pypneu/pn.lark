@@ -1,9 +1,19 @@
 start: statement+
 
-// consumables : catalysts -> inhibitors -o TRANSITION -> outputs
-statement: place_list ":" place_list "->" place_list "-o" TRANSITION "->" place_list "."
+statement: mechanism "."
+         | factual "."
 
-place_list: [PLACE ("," PLACE)*]
+// Using explicit groups so the parser knows exactly which slot is being filled
+mechanism: [consumables] [catalysts] "->" [inhibitors] TRANSITION [outputs]
+
+consumables: place_list
+catalysts:   ":" [place_list]
+inhibitors:  [place_list] "-o"
+outputs:     "->" [place_list]
+
+factual: place_list
+
+place_list: PLACE ("," PLACE)*
 
 PLACE:      /[a-z0-9_]+/
 TRANSITION: /#[a-z0-9_]+/
