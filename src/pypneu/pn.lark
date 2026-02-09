@@ -18,5 +18,13 @@ place_list: PLACE ("," PLACE)*
 PLACE:      /[a-z0-9_]+/
 TRANSITION: /#[a-z0-9_]+/
 
+// --- Comment Support ---
+// C-style multi-line: /* ... */
+COMMENT: /\/\*[\s\S]*?\*\//
+// C-style single-line: // ...
+LINE_COMMENT: /\/\/[^\n]*/
+
 %import common.WS
 %ignore WS
+%ignore COMMENT
+%ignore LINE_COMMENT
