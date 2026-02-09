@@ -1,32 +1,19 @@
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "pypneu"
 version = "0.1.0"
-description = "A Logic Programming Petri Net (LPPN) simulator and analyzer."
-readme = "README.md"
-requires-python = ">=3.8"
-authors = [
-    { name = "Your Name", email = "your.email@example.com" }
-]
-classifiers = [
-    "Programming Language :: Python :: 3",
-    "License :: OSI Approved :: MIT License",
-    "Operating System :: OS Independent",
-    "Topic :: Scientific/Engineering :: Mathematics",
-]
 dependencies = [
     "clingo>=5.5.0",
     "pydot>=1.4.2",
+    "imageio>=2.20.0",
+    "Pillow>=9.0.0",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest",
-    "matplotlib",
+# Dependencies specifically for the Web Interface
+ui = [
+    "streamlit>=1.20.0",
+    "pandas>=1.5.0",
 ]
 
-[tool.setuptools.packages.find]
-where = ["src"]
+[project.scripts]
+pypneu = "pypneu.cli:main"
