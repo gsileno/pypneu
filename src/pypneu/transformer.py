@@ -95,6 +95,7 @@ def get_parser():
     with open(grammar_path, "r", encoding="utf-8") as f:
         return Lark(f.read(), start='start', parser='earley')
 
+
 def parse_string(code: str):
     parser = get_parser()
     try:
@@ -104,3 +105,34 @@ def parse_string(code: str):
     except Exception as e:
         logger.error(f"Transformation failed: {e}")
         return None, [str(e)]
+
+
+def compile_file(filepath: str):
+    """
+    Reads a .pneu file and returns a dictionary of net components ready for execution
+    """
+    path = pathlib.Path(filepath)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {filepath}")
+
+    with open(path, 'r', encoding='utf-8') as f:
+        code = f.read()
+
+    return compile_string(code)
+
+
+def compile_string(code: str):
+    """
+    Reads a string containing pneu code and returns a dictionary of net components ready for execution
+    """
+    net, errors = parse_string(code)
+
+    if errors:
+        raise ValueError(f"Parsing errors: {', '.join(errors)}")
+
+    # The Executor expects a dict to unpack via **net_data
+    return {
+        "places": net.places,
+        "transitions": net.transitions,
+        "arcs": net.arcs
+    }

@@ -11,7 +11,6 @@ from . import structures as pn
 TOKEN_CHAR = "●"
 DEFAULT_NODE_ATTRS = {"width": 0.4, "height": 0.4, "fixedsize": "true"}
 
-
 class PetriNetViewer:
     """Generates Pydot graphs from PetriNetStructure objects."""
 
@@ -24,29 +23,26 @@ class PetriNetViewer:
         """Returns the Pydot attribute dictionary for a given PN element."""
         style = DEFAULT_NODE_ATTRS.copy()
 
-        # Base Labeling Logic
+        # Check if the place is marked (boolean in your structures.py)
         is_filled = getattr(element, 'marking', False)
+
+        # Labeling Logic:
+        # For places, we put the Token inside the circle.
+        # For transitions, we keep them empty but label them with their name.
         style['label'] = TOKEN_CHAR if is_filled else ""
+
         if hasattr(element, 'label') and element.label:
+            # xlabel places the text outside the node so it doesn't overlap the token
             style['xlabel'] = str(element.label)
 
-        # Type-specific overrides
-        if isinstance(element, pn.AnonymousPlace):
-            style.update({"shape": "circle", "color": "gray"})
-        elif isinstance(element, pn.ImplicitPlace):
-            style.update({"shape": "circle", "style": "dashed"})
-        elif isinstance(element, pn.Place):
-            style.update({"shape": "circle", "labelloc": "top"})
-        elif isinstance(element, pn.AnonymousTransition):
-            style.update({"shape": "box", "color": "gray", "label": ""})
+        # Type-specific shape overrides
+        if isinstance(element, pn.Place):
+            style.update({"shape": "circle"})
         elif isinstance(element, pn.Transition):
-            style.update({"shape": "box", "label": ""})
-        elif isinstance(element, pn.PlaceBinding):
-            style.update({"shape": "box", "style": "filled", "fillcolor": "black",
-                          "width": 0.2, "height": 0.2, "label": ""})
-        elif isinstance(element, pn.TransitionBinding):
-            style.update({"shape": "circle", "style": "filled", "fillcolor": "black",
-                          "width": 0.2, "height": 0.2, "label": ""})
+            style.update({"shape": "box", "style": "filled", "fillcolor": "white"})
+            # If it's a source transition, maybe give it a slight tint
+            if element.is_source:
+                style.update({"fillcolor": "#e8f5e9"}) # Very light green
 
         return style
 
@@ -56,49 +52,45 @@ class PetriNetViewer:
             graph_type='digraph',
             rankdir="LR",
             nodesep=0.5,
+            ranksep=0.7,
             margin=0.5,
             forcelabels="true"
         )
 
         id_to_pydot_node = {}
-        subgraphs: Dict[str, pydot.Subgraph] = {}
 
-        # 1. Process all Nodes (Places, Transitions, Bindings)
-        all_elements = (list(self.lppn.places) + list(self.lppn.transitions) +
-                        list(self.lppn.p_bindings) + list(self.lppn.t_bindings))
+        # 1. Process Nodes (Places and Transitions)
+        for p in self.lppn.places:
+            attrs = self._get_node_style(p)
+            node = pydot.Node(p.nid, **attrs)
+            id_to_pydot_node[p.nid] = node
+            graph.add_node(node)
 
-        for elem in all_elements:
-            attrs = self._get_node_style(elem)
-            node = pydot.Node(elem.nid, **attrs)
-            id_to_pydot_node[elem.nid] = node
+        for t in self.lppn.transitions:
+            attrs = self._get_node_style(t)
+            node = pydot.Node(t.nid, **attrs)
+            id_to_pydot_node[t.nid] = node
+            graph.add_node(node)
 
-            # Handle Clustering (Sub-nets)
-            if elem.snid:
-                if elem.snid not in subgraphs:
-                    subgraphs[elem.snid] = pydot.Subgraph(
-                        f"cluster_{elem.snid}",
-                        color="lightgrey",
-                        label=f"Subnet {elem.snid}"
-                    )
-                    graph.add_subgraph(subgraphs[elem.snid])
-                subgraphs[elem.snid].add_node(node)
-            else:
-                graph.add_node(node)
-
-        # 2. Process Arcs
+        # 2. Process Arcs using ArcType for styling
         for arc in self.lppn.arcs:
-            edge_style = "dotted" if arc.is_inferential() else "solid"
+            edge_attrs = {"style": "solid"}
+
+            # Map ArcTypes to Graphviz arrowheads
+            if arc.type == pn.ArcType.INHIBITOR:
+                edge_attrs["arrowhead"] = "dot" # Standard circle for inhibition
+            elif arc.type == pn.ArcType.RESET:
+                edge_attrs["arrowhead"] = "diamond"
+                edge_attrs["style"] = "dashed"
+            elif arc.type == pn.ArcType.ENABLER:
+                edge_attrs["arrowhead"] = "normal"
+
             pydot_edge = pydot.Edge(
                 id_to_pydot_node[arc.source.nid],
                 id_to_pydot_node[arc.target.nid],
-                style=edge_style
+                **edge_attrs
             )
-
-            # If both ends are in the same cluster, add edge to that subgraph
-            if arc.source.snid and arc.source.snid == arc.target.snid:
-                subgraphs[arc.source.snid].add_edge(pydot_edge)
-            else:
-                graph.add_edge(pydot_edge)
+            graph.add_edge(pydot_edge)
 
         return graph
 

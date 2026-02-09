@@ -1,0 +1,17 @@
+/*
+Non-deterministic System Test
+Scenario: One producer, two competing consumers
+*/
+
+// 1. Initial State: 1 token in 'ready'
+ready.
+
+// 2. Production: consumes 'ready', produces 'buffer'
+ready -> #produce -> buffer.
+
+// 3. Conflict: #path_a and #path_b both compete for the same 'buffer' token.
+buffer -> #path_a -> received_a.
+buffer -> #path_b -> received_b.
+
+// 4. Reset: Cleanup for next cycle (if tokens were available)
+received_a, received_b -> #reset -> ready.
