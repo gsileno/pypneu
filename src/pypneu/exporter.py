@@ -6,9 +6,16 @@ from .structures import PetriNetStructure, ArcType, Place, Transition
 
 def to_json(pn: PetriNetStructure) -> str:
     """Exports the Petri net to a custom JSON format."""
+    # We ensure marking is converted to int (0/1) for cleaner JSON serialization
     data = {
-        "places": [{"id": p.nid, "label": p.label, "marking": int(p.marking)} for p in pn.places],
-        "transitions": [{"id": t.nid, "label": t.label} for t in pn.transitions],
+        "places": [
+            {"id": p.nid, "label": p.label, "marking": int(p.marking)}
+            for p in pn.places
+        ],
+        "transitions": [
+            {"id": t.nid, "label": t.label}
+            for t in pn.transitions
+        ],
         "arcs": [
             {
                 "id": a.nid,
@@ -40,8 +47,7 @@ def to_pnml(pn: PetriNetStructure, filename: str):
         ET.SubElement(name, "text").text = t.label or t.nid
 
     for a in pn.arcs:
-        # PNML standards usually handle flow; custom types like INHIBITOR
-        # are often extension-dependent, but we export them as 'arc' here.
+        # Standard PNML flow. Custom types use the 'toolspecific' or 'type' tags.
         arc = ET.SubElement(page, "arc", id=a.nid, source=a.source.nid, target=a.target.nid)
         if a.type != ArcType.ENABLER:
             type_val = ET.SubElement(arc, "type")
@@ -57,27 +63,30 @@ def to_pnml(pn: PetriNetStructure, filename: str):
 
 def to_dot(pn: PetriNetStructure) -> str:
     """Generates a Graphviz DOT string for visualization."""
-    lines = ["digraph G {", "    rankdir=LR;"]
+    lines = ["digraph G {", "    rankdir=LR;", "    node [fontname=\"Arial\"];"]
 
     # Places: Circles
     for p in pn.places:
-        label = f"{p.label}\\n({1 if p.marking else 0})"
-        lines.append(f'    "{p.nid}" [label="{label}", shape=circle];')
+        # Visual representation of a token if marking is True
+        token_visual = "●" if p.marking else " "
+        label = f"{{ {p.label or p.nid} | {token_visual} }}"
+        # Using record shape for a cleaner 'ID over Token' look
+        lines.append(f'    "{p.nid}" [label="{label}", shape=Mrecord];')
 
     # Transitions: Rectangles
     for t in pn.transitions:
         label = t.label or t.nid
-        lines.append(f'    "{t.nid}" [label="{label}", shape=box, style=filled, fillcolor=lightgrey];')
+        lines.append(f'    "{t.nid}" [label="{label}", shape=box, style=filled, fillcolor=white];')
 
-    # Arcs
+    # Arcs with specific arrowheads for Petri Net semantics
     for a in pn.arcs:
         attrs = []
         if a.type == ArcType.INHIBITOR:
-            attrs.append("arrowhead=dot")
+            attrs.append("arrowhead=dot")  # Circle head for inhibitors
         elif a.type == ArcType.RESET:
-            attrs.append("arrowhead=vee")
+            attrs.append("arrowhead=tee")  # Flat head for reset
             attrs.append("style=dashed")
-        elif a.type == ArcType.ENABLER:
+        else:
             attrs.append("arrowhead=normal")
 
         attr_str = f" [{', '.join(attrs)}]" if attrs else ""
