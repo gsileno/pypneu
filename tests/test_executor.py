@@ -7,121 +7,212 @@ import logging
 sys.path.append(os.path.join(os.path.dirname(__file__), "../src"))
 
 from pypneu.structures import Place, Transition, Arc, ArcType
-from pypneu.executor import PetriNetExecution
+from pypneu.executor import PetriNetExecution, StochasticPetriNetExecution
 
-# Enable logging to see the debug traces during test runs
 logging.basicConfig(level=logging.DEBUG)
 
 
-class TestPetriNetExecution(unittest.TestCase):
+class TestComplexPetriNetExecution(unittest.TestCase):
 
-    def test_simulation_linear(self):
-        """Simple Petri net: P1 -> T1 -> P2."""
+    def test_conflict_resolution_by_story(self):
+        """Conflict: P1 can feed T1 OR T2. Story should decide."""
+        p1 = Place("p1", True)
+        p_out1 = Place("out1")
+        p_out2 = Place("out2")
+        t1 = Transition("t1")
+        t2 = Transition("t2")
+
+        Arc(p1, t1, ArcType.ENABLER)
+        Arc(t1, p_out1, ArcType.ENABLER)
+        Arc(p1, t2, ArcType.ENABLER)
+        Arc(t2, p_out2, ArcType.ENABLER)
+
+        # Story forces t2 to win the conflict
+        net = PetriNetExecution(places=[p1, p_out1, p_out2], transitions=[t1, t2], story=["t2"])
+        net.run_simulation(10)
+
+        self.assertTrue(p_out2.marking)
+        self.assertFalse(p_out1.marking)
+
+    def test_bus_partial_inhibition(self):
+        """Bus Sync: If one transition in a bus is inhibited, the whole bus fails to fire."""
+        p_in1 = Place("in1", True)
+        p_in2 = Place("in2", True)
+        p_block = Place("block", True)  # Inhibitor active
+
+        t1 = Transition("bus")
+        t2 = Transition("bus")
+
+        Arc(p_in1, t1, ArcType.ENABLER)
+        Arc(p_in2, t2, ArcType.ENABLER)
+        Arc(p_block, t1, ArcType.INHIBITOR)  # Blocks ONLY t1
+
+        net = PetriNetExecution(places=[p_in1, p_in2, p_block], transitions=[t1, t2])
+
+        # Whole bus should fail
+        steps = net.run_simulation(5)
+        self.assertEqual(steps, 0)
+        self.assertTrue(p_in1.marking)
+        self.assertTrue(p_in2.marking)
+
+    def test_self_loop_reset(self):
+        """Self-loop: T1 consumes P1 and produces P1. Mark stays True."""
+        p1 = Place("p1", True)
+        t1 = Transition("t1")
+        Arc(p1, t1, ArcType.ENABLER)
+        Arc(t1, p1, ArcType.ENABLER)
+
+        net = PetriNetExecution(places=[p1], transitions=[t1])
+        net.run_simulation(1)
+        self.assertTrue(p1.marking, "P1 should be restored by output arc")
+
+    def test_multi_place_requirement(self):
+        """Logical AND: T1 requires P1 AND P2 to fire."""
+        p1 = Place("p1", True)
+        p2 = Place("p2", False)  # Missing
+        t1 = Transition("t1")
+        Arc(p1, t1, ArcType.ENABLER)
+        Arc(p2, t1, ArcType.ENABLER)
+
+        net = PetriNetExecution(places=[p1, p2], transitions=[t1])
+        self.assertEqual(net.run_simulation(5), 0, "Should not fire without both tokens")
+
+    def test_inhibitor_cascade(self):
+        """P1 -> T1 -> P2. P2 inhibits T2. T2 should only fire after T1 clears it (or before T1)."""
+        p1 = Place("p1", True)
+        p2 = Place("p2", False)
+        t1 = Transition("t1")
+        t2 = Transition("source_t2")  # Source
+
+        Arc(p1, t1, ArcType.ENABLER)
+        Arc(t1, p2, ArcType.ENABLER)
+        Arc(p2, t2, ArcType.INHIBITOR)
+
+        net = PetriNetExecution(places=[p1, p2], transitions=[t1, t2], story=["source_t2", "t1", "source_t2"])
+
+        # 1. source_t2 fires (p2 is empty)
+        # 2. t1 fires (p2 becomes full)
+        # 3. source_t2 fails (p2 is full)
+        steps = net.run_simulation(10)
+        self.assertEqual(steps, 2)
+
+    def test_deadlock_scenario(self):
+        """Classic deadlock: T1 needs P2, T2 needs P1. Both empty."""
+        p1 = Place("p1")
+        p2 = Place("p2")
+        t1 = Transition("t1");
+        Arc(p2, t1, ArcType.ENABLER)
+        t2 = Transition("t2");
+        Arc(p1, t2, ArcType.ENABLER)
+
+        net = PetriNetExecution(places=[p1, p2], transitions=[t1, t2])
+        self.assertEqual(net.run_simulation(10), 0)
+
+    def test_alternating_bit_protocol_sync(self):
+        """Tests a producer-consumer sync where the 'channel' must be empty (inhibitor) to send."""
+        p_ready = Place("ready", True)
+        p_channel = Place("channel", False)
+        p_received = Place("received")
+
+        t_send = Transition("send")
+        Arc(p_ready, t_send, ArcType.ENABLER)
+        Arc(p_channel, t_send, ArcType.INHIBITOR)  # Send only if channel empty
+        Arc(t_send, p_channel, ArcType.ENABLER)
+
+        t_receive = Transition("receive")
+        Arc(p_channel, t_receive, ArcType.ENABLER)
+        Arc(t_receive, p_received, ArcType.ENABLER)
+
+        net = PetriNetExecution(places=[p_ready, p_channel, p_received], transitions=[t_send, t_receive])
+
+        # Step 1: Send. Step 2: Receive.
+        self.assertEqual(net.run_simulation(5), 2)
+        self.assertTrue(p_received.marking)
+
+    def test_bus_fan_out(self):
+        """Bus Sync: One input place triggers a bus that populates three different output places."""
+        p_in = Place("in", True)
+        out_places = [Place(f"out{i}") for i in range(3)]
+        transitions = [Transition("fan_bus") for _ in range(3)]
+
+        for i in range(3):
+            Arc(p_in, transitions[i], ArcType.ENABLER)
+            Arc(transitions[i], out_places[i], ArcType.ENABLER)
+
+        net = PetriNetExecution(places=[p_in] + out_places, transitions=transitions)
+        net.run_simulation(1)
+
+        # All outputs should be marked because the bus fired as a single unit
+        for p in out_places:
+            self.assertTrue(p.marking)
+
+    def test_catalyst_chain(self):
+        """Place C is a catalyst for T1, and T1 produces a token for T2."""
+        c = Place("cat", True)
         p1 = Place("p1", True)
         p2 = Place("p2")
         t1 = Transition("t1")
-
-        # Direct Arc instantiation as per updated structures.py
-        Arc(p1, t1, ArcType.ENABLER)
-        Arc(t1, p2, ArcType.ENABLER)
-
-        # The executor now automatically initializes the PetriNetStructure
-        net = PetriNetExecution(places=[p1, p2], transitions=[t1])
-
-        # Should complete 1 firing step
-        self.assertEqual(net.run_simulation(iterations=10), 1)
-        self.assertFalse(p1.marking)
-        self.assertTrue(p2.marking)
-
-    def test_simulation_source_transition(self):
-        """Transition with no inputs (Source) triggered by a story."""
-        p2 = Place("p2")
-        t1 = Transition("t1")
-        Arc(t1, p2, ArcType.ENABLER)
-
-        # story=["t1"] ensures the source transition fires
-        net = PetriNetExecution(places=[p2], transitions=[t1], story=["t1"])
-
-        self.assertEqual(net.run_simulation(10), 1)
-        self.assertTrue(p2.marking)
-
-    def test_simulation_story_consumption(self):
-        """Testing story sequence: T1 (Source) followed by T3."""
-        t1 = Transition("t1")
         t2 = Transition("t2")
-        t3 = Transition("t3")
-        p2 = Place("p2")
 
-        Arc(t1, p2, ArcType.ENABLER)
-        Arc(p2, t2, ArcType.ENABLER)
-        Arc(p2, t3, ArcType.ENABLER)
-
-        # t3 should fire after t1 because it's requested in the story
-        net = PetriNetExecution(places=[p2], transitions=[t1, t2, t3], story=["t1", "t3"])
-
-        # Step 1: t1 fires (p2=True). Step 2: t3 fires (p2=False).
-        self.assertEqual(net.run_simulation(10), 2)
-        self.assertFalse(p2.marking)
-
-    def test_simulation_bus_synchronization(self):
-        """Verifies that two transitions with the same label fire as one bus."""
-        p1 = Place("in1", True)
-        p2 = Place("in2", True)
-        p3 = Place("out1")
-        p4 = Place("out2")
-
-        # Two different transition objects with the same label
-        t1 = Transition("shared_bus")
-        t2 = Transition("shared_bus")
-
+        # T1 catalyst
+        Arc(c, t1, ArcType.ENABLER);
+        Arc(t1, c, ArcType.ENABLER)
         Arc(p1, t1, ArcType.ENABLER)
-        Arc(t1, p3, ArcType.ENABLER)
-        Arc(p2, t2, ArcType.ENABLER)
-        Arc(t2, p4, ArcType.ENABLER)
+        # T1 -> T2
+        p_mid = Place("mid")
+        Arc(t1, p_mid, ArcType.ENABLER)
+        Arc(p_mid, t2, ArcType.ENABLER)
+        Arc(t2, p2, ArcType.ENABLER)
 
-        net = PetriNetExecution(places=[p1, p2, p3, p4], transitions=[t1, t2])
+        net = PetriNetExecution(places=[c, p1, p_mid, p2], transitions=[t1, t2])
+        self.assertEqual(net.run_simulation(10), 2)
+        self.assertTrue(p2.marking)
+        self.assertTrue(c.marking)
 
-        # Only 1 step should occur because they fire together
-        steps = net.run_simulation(10)
-        self.assertEqual(steps, 1)
-        self.assertTrue(p3.marking)
-        self.assertTrue(p4.marking)
-        self.assertFalse(p1.marking)
-        self.assertFalse(p2.marking)
-
-    def test_inhibitor_logic(self):
-        """Ensures inhibitor arcs prevent firing."""
-        p_in = Place("input", True)
-        p_block = Place("block", True)
+    def test_story_override_natural_firing(self):
+        """Test that if a story specifies a transition that isn't enabled, simulation stops."""
+        p1 = Place("p1", False)  # NOT enabled
         t1 = Transition("t1")
+        Arc(p1, t1, ArcType.ENABLER)
 
-        Arc(p_in, t1, ArcType.ENABLER)
-        Arc(p_block, t1, ArcType.INHIBITOR)
+        net = PetriNetExecution(places=[p1], transitions=[t1], story=["t1"])
 
-        net = PetriNetExecution(places=[p_in, p_block], transitions=[t1])
+        # Even if iterations=10, it should fire 0 times because t1 is requested but blocked
+        self.assertEqual(net.run_simulation(10), 0)
 
-        # Should not fire because p_block has a token
-        self.assertEqual(net.run_simulation(5), 0)
-        self.assertTrue(p_in.marking)
+    def test_stochastic_distribution(self):
+        """Conflict: P1 -> T1 or T2. Over 100 runs, both should fire."""
+        t1_count = 0
+        t2_count = 0
 
-    def test_catalyst_biflow_simulation(self):
-        """Tests catalyst logic: token is required but not consumed."""
-        p_cat = Place("catalyst", True)
-        p_in = Place("input", True)
-        t1 = Transition("t1")
+        for _ in range(100):
+            # Initial marking: 1 token in p1
+            p1 = Place("p1", 1)
+            out1 = Place("out1")
+            out2 = Place("out2")
 
-        # Mimic what the transformer does for catalysts (Biflow)
-        Arc(p_cat, t1, ArcType.ENABLER)  # Input
-        Arc(t1, p_cat, ArcType.ENABLER)  # Output (Restore)
-        Arc(p_in, t1, ArcType.ENABLER)  # Consumable
+            t1 = Transition("t1")
+            # USE STANDARD CONSUMING ARCS
+            Arc(p1, t1)
+            Arc(t1, out1)
 
-        net = PetriNetExecution(places=[p_cat, p_in], transitions=[t1])
+            t2 = Transition("t2")
+            # USE STANDARD CONSUMING ARCS
+            Arc(p1, t2)
+            Arc(t2, out2)
 
-        net.run_simulation(1)
+            executor = StochasticPetriNetExecution(
+                places=[p1, out1, out2],
+                transitions=[t1, t2]
+            )
+            executor.run_simulation(iterations=1)
 
-        self.assertTrue(p_cat.marking, "Catalyst should still have token")
-        self.assertFalse(p_in.marking, "Input should have been consumed")
+            if out1.marking: t1_count += 1
+            if out2.marking: t2_count += 1
 
+        print(f"Distribution - T1: {t1_count}, T2: {t2_count}")
+        self.assertGreater(t1_count, 0)
+        self.assertGreater(t2_count, 0)
 
 if __name__ == '__main__':
     unittest.main()

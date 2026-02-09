@@ -1,8 +1,9 @@
 import logging
-from typing import List, Optional, Iterable, Set
+from typing import List, Optional, Iterable, Set, Dict
 from .structures import PetriNetStructure, Place, Transition
 
 logger = logging.getLogger("pypneu.executor")
+
 
 class PetriNetExecution:
     def __init__(self,
@@ -28,7 +29,7 @@ class PetriNetExecution:
         return steps_completed
 
     def step(self) -> bool:
-        firing_group = self._select_transition_group()
+        firing_group = self._get_next_firing_group()
         if not firing_group:
             return False
 
@@ -36,25 +37,21 @@ class PetriNetExecution:
         return True
 
     def _is_group_ready(self, group: List[Transition]) -> bool:
-        """
-        Validates if a group (Bus) can fire.
-        Sources are blocked if they have already fired once.
-        """
+        """Validates if a group (Bus) can fire."""
         if not group:
             return False
 
         for t in group:
-            # Check basic Petri Net enabling or source status
             if not (t.is_enabled() or t.is_source):
                 return False
 
-            # Constraint: Transitions with no input (Sources) fire max once
             if t.is_source and t.fired_count >= 1:
                 logger.debug(f"Source transition '{t.label}' blocked: already fired.")
                 return False
         return True
 
-    def _select_transition_group(self) -> List[Transition]:
+    def _get_next_firing_group(self) -> List[Transition]:
+        """Orchestrates selection logic: Story first, then Automatic/Stochastic."""
         # 1. Story Priority
         if self.remaining_story:
             target_label = self.remaining_story[0]
@@ -64,21 +61,36 @@ class PetriNetExecution:
                 self.remaining_story.pop(0)
                 logger.info(f"Story match: Firing bus group '{target_label}'")
                 return group
-            return [] # Story blocked
+            return []  # Story is blocked
 
-        # 2. Automatic Selection (if no story or story finished)
+        # 2. Collect ALL currently enabled groups
+        enabled_map: Dict[str, List[Transition]] = {}
         processed_labels: Set[str] = set()
+
         for t in self.pn.transitions:
-            if t.label and t.label not in processed_labels:
+            # Use label as key, or a unique string for unlabeled transitions
+            key = t.label if t.label else f"unlabeled_{id(t)}"
+
+            if key not in processed_labels:
                 group = [x for x in self.pn.transitions if x.label == t.label]
                 if self._is_group_ready(group):
-                    return group
-                processed_labels.add(t.label)
-            elif not t.label:
-                if self._is_group_ready([t]):
-                    return [t]
+                    enabled_map[key] = group
+                processed_labels.add(key)
 
-        return []
+        # 3. Delegate selection to the hook (overridden in Stochastic subclass)
+        return self.select_transition_group(enabled_map)
+
+    def select_transition_group(self, enabled_map: Dict[str, List[Transition]]) -> List[Transition]:
+        """
+        Hook for selection strategy.
+        Default behavior is deterministic: returns the first group found.
+        """
+        if not enabled_map:
+            return []
+
+        # Consistent deterministic choice (first key in dict)
+        first_key = next(iter(enabled_map))
+        return enabled_map[first_key]
 
     def _fire_group(self, transitions: List[Transition]):
         """Atomic Firing: Consume all inputs before producing any outputs."""
@@ -87,3 +99,13 @@ class PetriNetExecution:
 
         for t in transitions:
             t.produce_output_tokens()
+
+import random
+class StochasticPetriNetExecution(PetriNetExecution):
+
+    def select_transition_group(self, enabled_map):
+        if not enabled_map:
+            return []
+        labels = list(enabled_map.keys())
+        chosen_label = random.choice(labels)
+        return enabled_map[chosen_label]
